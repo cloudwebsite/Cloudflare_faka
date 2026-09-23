@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "faka",
+  "compatibility_date": "2026-09-22",
+  "main": "vike:server-entry",
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "faka_db",
+      "migrations_dir": "database/migrations",
+      // "database_id": "6ccaa772-9379-494a-8548-7a1bb74e30da" // 一键部署必须注释/
+    }
+  ],
+  "compatibility_flags": [
+    "nodejs_compat",
+     "global_fetch_strictly_public"
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": {
+		"enabled": true,
+		"head_sampling_rate": 0.1
+	},
+}

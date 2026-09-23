@@ -1,0 +1,769 @@
+import { sql } from "drizzle-orm";
+import { PUSH_MAX_ATTEMPTS } from "@/lib/push-utils";
+import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+const createdAt = integer("createdAt", { mode: "timestamp_ms" }).notNull();
+const updatedAt = integer("updatedAt", { mode: "timestamp_ms" }).notNull();
+
+// Better Auth tables.
+export const user = sqliteTable(
+  "user",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    email: text("email").notNull().unique(),
+
+    emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
+    emailChangeRequestedAt: integer("emailChangeRequestedAt", { mode: "timestamp_ms" }),
+    emailChangePendingEmail: text("emailChangePendingEmail"),
+    emailChangeLastSentAt: integer("emailChangeLastSentAt", { mode: "timestamp_ms" }),
+    disabledAt: integer("disabledAt", { mode: "timestamp_ms" }),
+    image: text("image"),
+    twoFactorEnabled: integer("twoFactorEnabled", { mode: "boolean" }).notNull().default(false),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex("user_email_lower_unique").on(sql`lower(${table.email})`)],
+);
+
+export const session = sqliteTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: integer("expiresAt", { mode: "timestamp_ms" }).notNull(),
+    token: text("token").notNull().unique(),
+    createdAt,
+    updatedAt,
+    ipAddress: text("ipAddress"),
+    userAgent: text("userAgent"),
+    userId: text("userId").notNull().references(() => user.id),
+  },
+  (table) => [index("session_userId_idx").on(table.userId)],
+);
+
+export const account = sqliteTable(
+  "account",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("accountId").notNull(),
+    providerId: text("providerId").notNull(),
+    userId: text("userId").notNull().references(() => user.id),
+    accessToken: text("accessToken"),
+    refreshToken: text("refreshToken"),
+    idToken: text("idToken"),
+    accessTokenExpiresAt: integer("accessTokenExpiresAt", { mode: "timestamp_ms" }),
+    refreshTokenExpiresAt: integer("refreshTokenExpiresAt", { mode: "timestamp_ms" }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [index("account_userId_idx").on(table.userId)],
+);
+
+export const twoFactor = sqliteTable("twoFactor", {
+  id: text("id").primaryKey(),
+  userId: text("userId").notNull().unique().references(() => user.id),
+  secret: text("secret").notNull(),
+  backupCodes: text("backupCodes").notNull(),
+  verified: integer("verified", { mode: "boolean" }).notNull().default(false),
+  failedVerificationCount: integer("failedVerificationCount").notNull().default(0),
+  lockedUntil: integer("lockedUntil", { mode: "timestamp_ms" }),
+});
+
+export const verification = sqliteTable("verification", {
+  id: text("id").primaryKey(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: integer("expiresAt", { mode: "timestamp_ms" }).notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp_ms" }),
+  updatedAt: integer("updatedAt", { mode: "timestamp_ms" }),
+});
+
+
+// A singleton row makes first-administrator assignment race-safe.
+export const adminBootstrap = sqliteTable("adminBootstrap", {
+  id: integer("id").primaryKey().default(1),
+  userId: text("userId").notNull().references(() => user.id),
+  createdAt,
+});
+
+export const siteSetting = sqliteTable("siteSetting", {
+  id: integer("id").primaryKey().default(1),
+  siteName: text("siteName").notNull(),
+  siteUrl: text("siteUrl"),
+  siteSubtitle: text("siteSubtitle"),
+  logo: text("logo"),
+  logoIcon: text("logoIcon"),
+  notice: text("notice"),
+  supportContact: text("supportContact"),
+  footerText: text("footerText"),
+  orderNotice: text("orderNotice"),
+  headCode: text("headCode"),
+  footerCode: text("footerCode"),
+  registrationEnabled: integer("registrationEnabled", { mode: "boolean" }).notNull().default(false),
+  timezone: text("timezone").notNull().default("Asia/Shanghai"),
+  storefrontLayout: text("storefrontLayout").notNull().default("classic"),
+  storefrontSkin: text("storefrontSkin").notNull().default("default"),
+  createdAt,
+  updatedAt,
+});
+
+export const category = sqliteTable(
+  "category",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description"),
+    icon: text("icon"),
+    sort: integer("sort").notNull().default(0),
+    status: text("status", { enum: ["ACTIVE", "DISABLED"] }).notNull().default("ACTIVE"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex("category_slug_unique").on(table.slug), index("category_status_sort_idx").on(table.status, table.sort)],
+);
+
+export const storefrontBanner = sqliteTable(
+  "storefront_banner",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    title: text("title"),
+    imageUrl: text("imageUrl").notNull(),
+    linkUrl: text("linkUrl"),
+    sort: integer("sort").notNull().default(0),
+    status: text("status", { enum: ["ACTIVE", "DISABLED"] }).notNull().default("ACTIVE"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [index("storefront_banner_status_sort_idx").on(table.status, table.sort)],
+);
+
+export const siteArticle = sqliteTable(
+  "site_article",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    type: text("type", { enum: ["NEWS", "HELP", "PAGE"] }).notNull(),
+    title: text("title").notNull(),
+    slug: text("slug").notNull(),
+    summary: text("summary"),
+    coverImage: text("coverImage"),
+    bodyHtml: text("bodyHtml").notNull(),
+    status: text("status", { enum: ["DRAFT", "PUBLISHED", "ARCHIVED"] }).notNull().default("DRAFT"),
+    pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
+    sort: integer("sort").notNull().default(0),
+    publishedAt: integer("publishedAt", { mode: "timestamp_ms" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("site_article_type_slug_unique").on(table.type, table.slug),
+    index("site_article_type_status_pin_sort_idx").on(table.type, table.status, table.pinned, table.sort, table.publishedAt),
+  ],
+);
+
+export const productV2 = sqliteTable(
+  "product_v2",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    categoryId: integer("categoryId").references(() => category.id, { onDelete: "set null" }),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    subtitle: text("subtitle"),
+    description: text("description"),
+    coverImage: text("coverImage"),
+    status: text("status", { enum: ["DRAFT", "ACTIVE", "INACTIVE"] }).notNull().default("DRAFT"),
+    manualDeliveryHint: text("manualDeliveryHint"),
+    sort: integer("sort").notNull().default(0),
+
+    purchaseNote: text("purchaseNote"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("product_v2_slug_unique").on(table.slug),
+    index("product_v2_categoryId_idx").on(table.categoryId),
+    index("product_v2_status_sort_idx").on(table.status, table.sort),
+  ],
+);
+
+
+export const productSku = sqliteTable(
+  "productSku",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    productId: integer("productId").notNull().references(() => productV2.id),
+    name: text("name").notNull(),
+    price: integer("price").notNull(),
+    status: text("status", { enum: ["ACTIVE", "INACTIVE"] }).notNull().default("ACTIVE"),
+    fulfillmentSource: text("fulfillmentSource", { enum: ["LOCAL", "SUPPLIER"] }).notNull().default("LOCAL"),
+    deliveryType: text("deliveryType", { enum: ["CARD_AUTO", "FIXED_CARD", "MANUAL", "EXPRESS", "SUPPLIER"] }).notNull(),
+    fixedDeliveryContent: text("fixedDeliveryContent"),
+    physicalStock: integer("physicalStock"),
+    minBuy: integer("minBuy").notNull().default(1),
+    maxBuy: integer("maxBuy").notNull().default(1),
+    sort: integer("sort").notNull().default(0),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("productSku_product_name_unique").on(table.productId, table.name),
+    index("productSku_product_status_sort_idx").on(table.productId, table.status, table.sort),
+  ],
+);
+
+export const discountCode = sqliteTable(
+  "discountCode",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    code: text("code").notNull(),
+    type: text("type", { enum: ["FIXED", "PERCENT"] }).notNull(),
+    value: integer("value").notNull(),
+    minAmount: integer("minAmount"),
+    maxUses: integer("maxUses"),
+    usedCount: integer("usedCount").notNull().default(0),
+    reservedCount: integer("reservedCount").notNull().default(0),
+    productIds: text("productIds"),
+    expiresAt: integer("expiresAt", { mode: "timestamp_ms" }),
+    isActive: integer("isActive", { mode: "boolean" }).notNull().default(true),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex("discountCode_code_unique").on(table.code), index("discountCode_active_idx").on(table.isActive)],
+);
+
+export const customerAddress = sqliteTable(
+  "customerAddress",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: text("userId").notNull().references(() => user.id),
+    recipientName: text("recipientName").notNull(),
+    phone: text("phone").notNull(),
+    country: text("country").notNull().default("中国"),
+    province: text("province").notNull(),
+    city: text("city").notNull(),
+    district: text("district").notNull(),
+    addressLine: text("addressLine").notNull(),
+    postalCode: text("postalCode"),
+    isDefault: integer("isDefault", { mode: "boolean" }).notNull().default(false),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index("customerAddress_userId_createdAt_idx").on(table.userId, table.createdAt),
+    index("customerAddress_userId_default_idx").on(table.userId, table.isDefault),
+  ],
+);
+
+export const order = sqliteTable(
+  "order",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orderNo: text("orderNo").notNull(),
+    ownerUserId: text("ownerUserId").references(() => user.id),
+    productId: integer("productId").references(() => productV2.id, { onDelete: "set null" }),
+    productSkuId: integer("productSkuId").references(() => productSku.id, { onDelete: "set null" }),
+    productNameSnapshot: text("productNameSnapshot").notNull(),
+    productSkuNameSnapshot: text("productSkuNameSnapshot"),
+    unitPrice: integer("unitPrice").notNull(),
+    quantity: integer("quantity").notNull(),
+    amount: integer("amount").notNull(),
+    contactType: text("contactType", { enum: ["EMAIL", "QQ", "TELEGRAM", "OTHER"] }).notNull().default("EMAIL"),
+    contactValue: text("contactValue"),
+    contactEmailNormalized: text("contactEmailNormalized"),
+    buyerNote: text("buyerNote"),
+    addressSnapshotJson: text("addressSnapshotJson"),
+    paymentProvider: text("paymentProvider").notNull(),
+    paymentChannel: text("paymentChannel"),
+    fulfillmentSourceSnapshot: text("fulfillmentSourceSnapshot", { enum: ["LOCAL", "SUPPLIER"] }).notNull().default("LOCAL"),
+    deliveryTypeSnapshot: text("deliveryTypeSnapshot", { enum: ["CARD_AUTO", "FIXED_CARD", "MANUAL", "EXPRESS", "SUPPLIER"] }).notNull(),
+    fixedDeliveryContentSnapshot: text("fixedDeliveryContentSnapshot"),
+    physicalStockReserved: integer("physicalStockReserved", { mode: "boolean" }).notNull().default(false),
+    status: text("status", { enum: ["PENDING", "PAID", "DELIVERED", "CLOSED", "FAILED"] }).notNull().default("PENDING"),
+    paymentStatus: text("paymentStatus", { enum: ["UNPAID", "PAID", "FAILED"] }).notNull().default("UNPAID"),
+    deliveryStatus: text("deliveryStatus", { enum: ["NOT_DELIVERED", "DELIVERING", "DELIVERED", "FAILED"] }).notNull().default("NOT_DELIVERED"),
+    deliveryToken: text("deliveryToken"),
+    deliveryLeaseUntil: integer("deliveryLeaseUntil", { mode: "timestamp_ms" }),
+    discountCodeId: integer("discountCodeId").references(() => discountCode.id, { onDelete: "set null" }),
+    discountCodeStr: text("discountCodeStr"),
+    originalAmount: integer("originalAmount"),
+    discountAmount: integer("discountAmount"),
+    paidAt: integer("paidAt", { mode: "timestamp_ms" }),
+    deliveredAt: integer("deliveredAt", { mode: "timestamp_ms" }),
+    closedAt: integer("closedAt", { mode: "timestamp_ms" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("order_orderNo_unique").on(table.orderNo),
+    index("order_productId_idx").on(table.productId),
+    index("order_ownerUserId_createdAt_idx").on(table.ownerUserId, table.createdAt),
+    index("order_guestEmail_createdAt_idx").on(table.contactEmailNormalized, table.createdAt),
+    index("order_status_createdAt_idx").on(table.status, table.createdAt),
+    index("order_paymentStatus_createdAt_idx").on(table.paymentStatus, table.createdAt),
+    index("order_deliveryStatus_createdAt_idx").on(table.deliveryStatus, table.createdAt),
+  ],
+);
+
+export const card = sqliteTable(
+  "card",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    productId: integer("productId").notNull().references(() => productV2.id),
+    productSkuId: integer("productSkuId").references(() => productSku.id),
+    content: text("content").notNull(),
+    status: text("status", { enum: ["UNUSED", "SOLD", "DISABLED"] }).notNull().default("UNUSED"),
+    batchNo: text("batchNo"),
+    orderId: integer("orderId").references(() => order.id, { onDelete: "set null" }),
+    soldAt: integer("soldAt", { mode: "timestamp_ms" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [index("card_product_status_idx").on(table.productId, table.status), index("card_orderId_idx").on(table.orderId)],
+);
+
+export const orderDelivery = sqliteTable(
+  "orderDelivery",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orderId: integer("orderId").notNull().references(() => order.id),
+    deliveryType: text("deliveryType", { enum: ["CARD", "FIXED_CARD", "SUPPLIER", "MANUAL", "EXPRESS"] }).notNull(),
+    attemptToken: text("attemptToken").notNull(),
+    contentSnapshot: text("contentSnapshot"),
+    errorCode: text("errorCode"),
+    status: text("status", { enum: ["SUCCESS", "FAILED"] }).notNull().default("SUCCESS"),
+    createdAt,
+  },
+  (table) => [
+    uniqueIndex("orderDelivery_attemptToken_unique").on(table.attemptToken),
+    index("orderDelivery_orderId_createdAt_idx").on(table.orderId, table.createdAt),
+  ],
+);
+
+export const paymentAttempt = sqliteTable(
+  "paymentAttempt",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orderId: integer("orderId").notNull().references(() => order.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    channel: text("channel"),
+    paymentOrderNo: text("paymentOrderNo"),
+    status: text("status", { enum: ["CREATING", "PENDING", "PAID", "FAILED"] }).notNull().default("CREATING"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [index("paymentAttempt_orderId_createdAt_idx").on(table.orderId, table.createdAt), index("paymentAttempt_provider_paymentOrderNo_idx").on(table.provider, table.paymentOrderNo)],
+);
+
+export const automaticDeliveryJob = sqliteTable(
+  "automaticDeliveryJob",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orderId: integer("orderId").notNull().references(() => order.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["PENDING", "PROCESSING", "SUCCESS", "FAILED"] }).notNull().default("PENDING"),
+    leaseUntil: integer("leaseUntil", { mode: "timestamp_ms" }),
+    attemptCount: integer("attemptCount").notNull().default(0),
+    lastError: text("lastError"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex("automaticDeliveryJob_orderId_unique").on(table.orderId), index("automaticDeliveryJob_status_id_idx").on(table.status, table.id)],
+);
+
+export const orderEvent = sqliteTable(
+  "orderEvent",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    eventKey: text("eventKey").notNull(),
+    orderId: integer("orderId").notNull().references(() => order.id, { onDelete: "cascade" }),
+    scene: text("scene", { enum: ["ORDER_PAID", "DELIVERY_SUCCESS", "DELIVERY_FAILED", "PAYMENT_EXCEPTION"] }).notNull(),
+    errorMessage: text("errorMessage"),
+    status: text("status", { enum: ["PENDING", "PROCESSING", "PROCESSED"] }).notNull().default("PENDING"),
+    attemptCount: integer("attemptCount").notNull().default(0),
+    availableAt: integer("availableAt", { mode: "timestamp_ms" }).notNull(),
+    leaseUntil: integer("leaseUntil", { mode: "timestamp_ms" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex("orderEvent_eventKey_unique").on(table.eventKey), index("orderEvent_status_availableAt_idx").on(table.status, table.availableAt)],
+);
+
+export const transactionGuard = sqliteTable("transactionGuard", {
+  id: integer("id").primaryKey().default(1),
+  value: integer("value").notNull(),
+}, (table) => [check("transactionGuard_value_check", sql`${table.value} = 1`)]);
+
+// Provider-specific payment fields are stored in D1 as validated JSON.
+export const paymentProvider = sqliteTable(
+  "paymentProvider",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    provider: text("provider").notNull(),
+    name: text("name").notNull(),
+    isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(false),
+    sort: integer("sort").notNull().default(0),
+    configJson: text("configJson").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("paymentProvider_provider_unique").on(table.provider),
+    index("paymentProvider_enabled_sort_idx").on(table.isEnabled, table.sort),
+  ],
+);
+
+export const paymentLog = sqliteTable(
+  "paymentLog",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orderId: integer("orderId").references(() => order.id, { onDelete: "set null" }),
+    provider: text("provider").notNull(),
+    orderNo: text("orderNo"),
+    paymentOrderNo: text("paymentOrderNo"),
+    eventType: text("eventType").notNull(),
+    rawPayload: text("rawPayload").notNull(),
+    verifyStatus: text("verifyStatus", { enum: ["PENDING", "VERIFIED", "FAILED"] }).notNull().default("PENDING"),
+    message: text("message"),
+    createdAt,
+  },
+  (table) => [
+    index("paymentLog_provider_createdAt_idx").on(table.provider, table.createdAt),
+    index("paymentLog_orderNo_idx").on(table.orderNo),
+    index("paymentLog_orderId_idx").on(table.orderId),
+  ],
+);
+
+export const pushChannelConfig = sqliteTable(
+  "pushChannelConfig",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    channel: text("channel", { enum: ["EMAIL", "WECHAT", "TELEGRAM"] }).notNull(),
+    provider: text("provider").notNull(),
+    name: text("name").notNull(),
+    isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(false),
+    configJson: text("configJson").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [index("pushChannelConfig_channel_provider_idx").on(table.channel, table.provider), index("pushChannelConfig_channel_enabled_idx").on(table.channel, table.isEnabled)],
+);
+
+export const orderRequestRateLimit = sqliteTable(
+  "orderRequestRateLimit",
+  {
+    keyHash: text("keyHash").primaryKey(),
+    requestCount: integer("requestCount").notNull().default(1),
+    expiresAt: integer("expiresAt", { mode: "timestamp_ms" }).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [index("orderRequestRateLimit_expiresAt_idx").on(table.expiresAt)],
+);
+
+export const guestOrderRecoveryChallenge = sqliteTable(
+  "guestOrderRecoveryChallenge",
+  {
+    id: text("id").primaryKey(),
+    emailNormalized: text("emailNormalized").notNull(),
+    codeHash: text("codeHash").notNull(),
+    expiresAt: integer("expiresAt", { mode: "timestamp_ms" }).notNull(),
+    attemptCount: integer("attemptCount").notNull().default(0),
+    consumedAt: integer("consumedAt", { mode: "timestamp_ms" }),
+    createdAt,
+  },
+  (table) => [index("guestRecovery_email_createdAt_idx").on(table.emailNormalized, table.createdAt)],
+);
+
+export const emailTemplate = sqliteTable(
+  "emailTemplate",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    scene: text("scene", { enum: ["TEST", "EMAIL_VERIFICATION", "PASSWORD_RESET", "GUEST_ORDER_RECOVERY", "ORDER_PAID", "DELIVERY_SUCCESS", "DELIVERY_FAILED", "PAYMENT_EXCEPTION"] }).notNull(),
+    name: text("name").notNull(),
+    templateJson: text("templateJson").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex("emailTemplate_scene_unique").on(table.scene)],
+);
+
+
+export const pushPolicy = sqliteTable(
+  "pushPolicy",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    messageType: text("messageType", { enum: ["NORMAL", "ADMIN"] }).notNull(),
+    scene: text("scene", { enum: ["ORDER_PAID", "DELIVERY_SUCCESS", "DELIVERY_FAILED", "PAYMENT_EXCEPTION"] }).notNull(),
+    channelsJson: text("channelsJson").notNull().default("[]"),
+    isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex("pushPolicy_messageType_scene_unique").on(table.messageType, table.scene)],
+);
+
+export const pushLog = sqliteTable(
+  "pushLog",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orderId: integer("orderId").references(() => order.id, { onDelete: "set null" }),
+    channelConfigId: integer("channelConfigId").references(() => pushChannelConfig.id, { onDelete: "set null" }),
+    idempotencyKey: text("idempotencyKey"),
+    messageType: text("messageType", { enum: ["NORMAL", "ADMIN"] }).notNull().default("NORMAL"),
+    channel: text("channel", { enum: ["EMAIL", "WECHAT", "TELEGRAM"] }).notNull(),
+    provider: text("provider").notNull(),
+    scene: text("scene", { enum: ["TEST", "EMAIL_VERIFICATION", "PASSWORD_RESET", "GUEST_ORDER_RECOVERY", "ORDER_PAID", "DELIVERY_SUCCESS", "DELIVERY_FAILED", "PAYMENT_EXCEPTION"] }).notNull(),
+    recipient: text("recipient").notNull(),
+    subject: text("subject"),
+    status: text("status", { enum: ["PENDING", "PROCESSING", "SUCCESS", "FAILED", "SKIPPED", "EXHAUSTED"] }).notNull(),
+    attemptCount: integer("attemptCount").notNull().default(0),
+    messageId: text("messageId"),
+    error: text("error"),
+    triggeredBy: text("triggeredBy"),
+    createdAt,
+    updatedAt: integer("updatedAt", { mode: "timestamp_ms" }),
+  },
+  (table) => [uniqueIndex("pushLog_idempotencyKey_unique").on(table.idempotencyKey), index("pushLog_channel_createdAt_idx").on(table.channel, table.createdAt), index("pushLog_status_createdAt_idx").on(table.status, table.createdAt), index("pushLog_orderId_idx").on(table.orderId)],
+);
+
+export const pushRetry = sqliteTable(
+  "pushRetry",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    pushLogId: integer("pushLogId").notNull().references(() => pushLog.id, { onDelete: "cascade" }),
+    payloadJson: text("payloadJson").notNull(),
+    status: text("status", { enum: ["PENDING", "PROCESSING", "EXHAUSTED"] }).notNull().default("PENDING"),
+    attemptCount: integer("attemptCount").notNull().default(0),
+    maxAttempts: integer("maxAttempts").notNull().default(PUSH_MAX_ATTEMPTS),
+    nextAttemptAt: integer("nextAttemptAt", { mode: "timestamp_ms" }).notNull(),
+    lastError: text("lastError"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [index("pushRetry_status_nextAttemptAt_idx").on(table.status, table.nextAttemptAt), uniqueIndex("pushRetry_pushLogId_unique").on(table.pushLogId)],
+);
+
+
+export const supplierAccount = sqliteTable(
+  "supplierAccount",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider", { enum: ["acg", "dujiao_next"] }).notNull(),
+    baseUrl: text("baseUrl").notNull(),
+    normalizedApiOrigin: text("normalizedApiOrigin").notNull(),
+    protocolVersion: text("protocolVersion").notNull(),
+    name: text("name").notNull(),
+    currency: text("currency").notNull().default("CNY"),
+    currencyDecimals: integer("currencyDecimals").notNull().default(2),
+    credentialsJson: text("credentialsJson").notNull(),
+    credentialsRevision: integer("credentialsRevision").notNull().default(1),
+    balanceMinor: text("balanceMinor"),
+    balanceSyncedAt: integer("balanceSyncedAt", { mode: "timestamp_ms" }),
+    reserveBalanceMinor: text("reserveBalanceMinor").notNull().default("0"),
+    lowBalanceMinor: text("lowBalanceMinor").notNull().default("0"),
+    maxOrderCostMinor: text("maxOrderCostMinor"),
+    healthStatus: text("healthStatus", { enum: ["unknown", "healthy", "degraded", "unavailable"] }).notNull().default("unknown"),
+    consecutiveFailures: integer("consecutiveFailures").notNull().default(0),
+    cooldownUntil: integer("cooldownUntil", { mode: "timestamp_ms" }),
+    lastSelectedAt: integer("lastSelectedAt", { mode: "timestamp_ms" }),
+    lastErrorCode: text("lastErrorCode"),
+    lastErrorAt: integer("lastErrorAt", { mode: "timestamp_ms" }),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("supplierAccount_source_name_unique").on(table.provider, table.normalizedApiOrigin, table.protocolVersion, table.name),
+    index("supplierAccount_eligible_idx").on(table.provider, table.normalizedApiOrigin, table.enabled, table.healthStatus, table.cooldownUntil, table.lastSelectedAt),
+    index("supplierAccount_updatedAt_idx").on(table.updatedAt),
+  ],
+);
+
+export const supplierBinding = sqliteTable(
+  "supplierBinding",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    productSkuId: integer("productSkuId").notNull().references(() => productSku.id, { onDelete: "cascade" }),
+    provider: text("provider", { enum: ["acg", "dujiao_next"] }).notNull(),
+    normalizedApiOrigin: text("normalizedApiOrigin").notNull(),
+    protocolVersion: text("protocolVersion").notNull(),
+    upstreamProductId: text("upstreamProductId").notNull(),
+    upstreamSkuId: text("upstreamSkuId").notNull(),
+    upstreamProductName: text("upstreamProductName").notNull(),
+    upstreamSkuName: text("upstreamSkuName").notNull(),
+    purchaseContextJson: text("purchaseContextJson"),
+    referenceCostMinor: text("referenceCostMinor").notNull(),
+    maxCostMinor: text("maxCostMinor").notNull(),
+    stockQuantity: integer("stockQuantity").notNull().default(0),
+    remoteStatus: text("remoteStatus", { enum: ["active", "inactive", "deleted", "unknown"] }).notNull().default("unknown"),
+    lastSyncedAt: integer("lastSyncedAt", { mode: "timestamp_ms" }),
+    lastErrorCode: text("lastErrorCode"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("supplierBinding_sku_enabled_unique").on(table.productSkuId).where(sql`${table.enabled} = 1`),
+    uniqueIndex("supplierBinding_source_sku_unique").on(table.provider, table.normalizedApiOrigin, table.protocolVersion, table.upstreamProductId, table.upstreamSkuId).where(sql`${table.enabled} = 1`),
+    index("supplierBinding_sync_idx").on(table.provider, table.normalizedApiOrigin, table.enabled, table.remoteStatus, table.lastSyncedAt),
+  ],
+);
+
+export const supplierOrder = sqliteTable(
+  "supplierOrder",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orderId: integer("orderId").notNull().references(() => order.id, { onDelete: "cascade" }),
+    productSkuId: integer("productSkuId").notNull().references(() => productSku.id),
+    supplierBindingId: integer("supplierBindingId").notNull().references(() => supplierBinding.id),
+    deliveryRecordId: integer("deliveryRecordId").references(() => orderDelivery.id, { onDelete: "set null" }),
+    selectedAccountId: text("selectedAccountId").references(() => supplierAccount.id),
+    selectedCredentialsRevision: integer("selectedCredentialsRevision"),
+    providerRequestNo: text("providerRequestNo"),
+    upstreamOrderId: text("upstreamOrderId"),
+    quantity: integer("quantity").notNull(),
+    quotedUnitCostMinor: text("quotedUnitCostMinor"),
+    totalCostMinor: text("totalCostMinor"),
+    currency: text("currency").notNull().default("CNY"),
+    bindingSnapshotJson: text("bindingSnapshotJson").notNull(),
+    state: text("state", { enum: ["pending", "selecting", "submitting", "processing", "uncertain", "supplied", "failed", "refunded"] }).notNull().default("pending"),
+    attemptCount: integer("attemptCount").notNull().default(0),
+    selectionCount: integer("selectionCount").notNull().default(0),
+    accountLockedAt: integer("accountLockedAt", { mode: "timestamp_ms" }),
+    nextRetryAt: integer("nextRetryAt", { mode: "timestamp_ms" }),
+    lastErrorCode: text("lastErrorCode"),
+    lastErrorMessage: text("lastErrorMessage"),
+    submittedAt: integer("submittedAt", { mode: "timestamp_ms" }),
+    suppliedAt: integer("suppliedAt", { mode: "timestamp_ms" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("supplierOrder_order_unique").on(table.orderId),
+    uniqueIndex("supplierOrder_account_request_unique").on(table.selectedAccountId, table.providerRequestNo),
+    index("supplierOrder_state_retry_idx").on(table.state, table.nextRetryAt, table.id),
+    index("supplierOrder_upstream_idx").on(table.selectedAccountId, table.upstreamOrderId),
+  ],
+);
+
+export const supplierSyncSettings = sqliteTable("supplierSyncSettings", {
+  id: integer("id").primaryKey().default(1),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  intervalMs: integer("intervalMs").notNull().default(3600000),
+  lastStartedAt: integer("lastStartedAt", { mode: "timestamp_ms" }),
+  lastCompletedAt: integer("lastCompletedAt", { mode: "timestamp_ms" }),
+  lastStatus: text("lastStatus", { enum: ["idle", "running", "success", "failed"] }).notNull().default("idle"),
+  lastError: text("lastError"),
+  createdAt,
+  updatedAt,
+});
+
+export const scheduledTaskRun = sqliteTable(
+  "scheduledTaskRun",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    task: text("task", { enum: ["MAINTENANCE"] }).notNull(),
+    status: text("status", { enum: ["RUNNING", "SUCCESS", "PARTIAL", "FAILED"] }).notNull(),
+    scannedOrderCount: integer("scannedOrderCount"),
+    closedOrderCount: integer("closedOrderCount"),
+
+    pushRetryAttempted: integer("pushRetryAttempted"),
+    pushRetrySent: integer("pushRetrySent"),
+    pushRetryExhausted: integer("pushRetryExhausted"),
+    error: text("error"),
+    startedAt: integer("startedAt", { mode: "timestamp_ms" }).notNull(),
+    completedAt: integer("completedAt", { mode: "timestamp_ms" }),
+  },
+  (table) => [index("scheduledTaskRun_task_startedAt_idx").on(table.task, table.startedAt)],
+);
+
+export const s3Config = sqliteTable("s3Config", {
+  id: integer("id").primaryKey().default(1),
+  configJson: text("configJson").notNull(),
+  accessKeyId: text("accessKeyId"),
+  secretAccessKey: text("secretAccessKey"),
+  createdAt,
+  updatedAt,
+});
+
+export const media = sqliteTable(
+  "media",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    originalName: text("originalName").notNull(),
+    storedName: text("storedName").notNull(),
+    mimeType: text("mimeType").notNull(),
+    fileSize: integer("fileSize").notNull(),
+    fileKey: text("fileKey").notNull(),
+    url: text("url").notNull(),
+    path: text("path"),
+    metadataJson: text("metadataJson"),
+    uploadedBy: text("uploadedBy").notNull().references(() => user.id),
+    uploadedAt: integer("uploadedAt", { mode: "timestamp_ms" }).notNull(),
+    updatedAt,
+  },
+  (table) => [uniqueIndex("media_fileKey_unique").on(table.fileKey), index("media_mimeType_idx").on(table.mimeType), index("media_path_idx").on(table.path), index("media_uploadedAt_id_idx").on(table.uploadedAt, table.id)],
+);
+
+export const telegramSupportConfig = sqliteTable("telegramSupportConfig", {
+  id: integer("id").primaryKey(),
+  isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(false),
+  configJson: text("configJson").notNull(),
+  createdAt,
+  updatedAt,
+});
+
+export const telegramSupportSession = sqliteTable(
+  "telegramSupportSession",
+  {
+    chatId: text("chatId").primaryKey(),
+    state: text("state", { enum: ["idle", "await_order", "await_email", "human"] }).notNull().default("idle"),
+    pendingOrderNo: text("pendingOrderNo"),
+    updatedAt,
+  },
+  (table) => [index("telegramSupportSession_updatedAt_idx").on(table.updatedAt)],
+);
+
+export const schema = {
+  user,
+  session,
+  account,
+  verification,
+  twoFactor,
+  adminBootstrap,
+  siteSetting,
+  category,
+  storefrontBanner,
+  siteArticle,
+  productV2,
+  productSku,
+  discountCode,
+  order,
+  card,
+  orderDelivery,
+  paymentAttempt,
+  automaticDeliveryJob,
+  orderEvent,
+  transactionGuard,
+  paymentProvider,
+  paymentLog,
+  pushChannelConfig,
+  orderRequestRateLimit,
+  guestOrderRecoveryChallenge,
+  emailTemplate,
+
+  pushPolicy,
+  pushLog,
+  pushRetry,
+  scheduledTaskRun,
+  supplierAccount,
+  supplierBinding,
+  supplierOrder,
+  supplierSyncSettings,
+
+  s3Config,
+  media,
+  telegramSupportConfig,
+  telegramSupportSession,
+};
