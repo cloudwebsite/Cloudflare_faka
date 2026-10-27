@@ -1,0 +1,93 @@
+<template>
+  <html :data-storefront-skin="skin" />
+  <link rel="icon" :href="iconUrl" />
+  <link rel="apple-touch-icon" :href="iconUrl" />
+  <link v-if="seo.canonicalUrl" rel="canonical" :href="seo.canonicalUrl" />
+  <meta v-if="seo.robots" name="robots" :content="seo.robots" />
+  <template v-if="!seo.robots">
+    <meta property="og:type" :content="seo.ogType" />
+    <meta property="og:title" :content="seo.title" />
+    <meta property="og:description" :content="seo.description" />
+    <meta property="og:site_name" :content="seo.siteName" />
+    <meta v-if="seo.canonicalUrl" property="og:url" :content="seo.canonicalUrl" />
+    <meta v-if="seo.imageUrl" property="og:image" :content="seo.imageUrl" />
+    <meta name="twitter:card" :content="seo.imageUrl ? 'summary_large_image' : 'summary'" />
+    <meta name="twitter:title" :content="seo.title" />
+    <meta name="twitter:description" :content="seo.description" />
+    <meta v-if="seo.imageUrl" name="twitter:image" :content="seo.imageUrl" />
+  </template>
+</template>
+
+<script setup lang="ts">
+import { computed } from "vue";
+import { usePageContext } from "vike-vue/usePageContext";
+import defaultLogoUrl from "@/assets/logo.svg?url";
+import { seoTextFor } from "@/lib/i18n/seo";
+import { pickLocalizedText, resolveLocale, type LocalizedNullableText, type LocalizedText } from "@/lib/i18n/localized-text";
+import { normalizeStorefrontSkin } from "@/lib/storefront-templates/registry";
+
+type Site = { name?: string; subtitle?: LocalizedNullableText | null; siteUrl?: string | null; logo?: string | null; logoIcon?: string | null; skin?: string | null };
+type ProductData = { name?: LocalizedText; subtitle?: LocalizedNullableText | null; description?: LocalizedNullableText | null; coverImage?: string | null };
+type SeoPageContext = { site?: Site; data?: ProductData; urlPathname?: string; locale?: string; routeParams?: { adminPath?: string }; urlParsed?: { origin?: string } };
+
+const pageContext = usePageContext() as SeoPageContext;
+const skin = computed(() => normalizeStorefrontSkin(pageContext.site?.skin));
+const isPrivatePage = computed(() => {
+  const pathname = pageContext.urlPathname || "/";
+  return Boolean(pageContext.routeParams?.adminPath) || pathname === "/setup" || pathname === "/order" || pathname === "/checkout" || pathname === "/payment-result" || pathname.startsWith("/_error");
+});
+const siteUrl = computed(() => normalizeOrigin(pageContext.site?.siteUrl) || normalizeOrigin(pageContext.urlParsed?.origin));
+const iconUrl = computed(() => pageContext.site?.logoIcon || pageContext.site?.logo || defaultLogoUrl);
+const seo = computed(() => {
+  const locale = resolveLocale(pageContext.locale);
+  const fallback = seoTextFor(locale);
+  const siteName = pageContext.site?.name || fallback.siteName;
+  const product = pageContext.data;
+  const productName = product?.name ? pickLocalizedText(product.name, locale) : "";
+  const siteSubtitle = pageContext.site?.subtitle ? pickLocalizedText(pageContext.site.subtitle, locale) : "";
+  const isProductPage = Boolean(productName && (pageContext.urlPathname || "").startsWith("/product/"));
+  const title = isProductPage ? `${productName} - ${siteName}` : siteName;
+  const description = isProductPage
+    ? (product?.subtitle ? pickLocalizedText(product.subtitle, locale).trim() : "")
+      || (product?.description ? toPlainText(pickLocalizedText(product.description, locale)) : "")
+      || siteSubtitle
+      || fallback.description
+    : siteSubtitle || fallback.description;
+  const canonicalUrl = !isPrivatePage.value && siteUrl.value ? new URL(pageContext.urlPathname || "/", `${siteUrl.value}/`).toString() : null;
+  const imageUrl = !isPrivatePage.value ? toAbsoluteUrl(product?.coverImage || pageContext.site?.logoIcon || pageContext.site?.logo || defaultLogoUrl, siteUrl.value) : null;
+
+  return {
+    title,
+    description,
+    siteName,
+    canonicalUrl,
+    imageUrl,
+    ogType: isProductPage ? "product" : "website",
+    robots: isPrivatePage.value ? "noindex,nofollow,noarchive" : null,
+  };
+});
+
+function toPlainText(value: string | null | undefined) {
+  return value?.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160) || "";
+}
+
+function normalizeOrigin(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function toAbsoluteUrl(value: string | null | undefined, origin: string | null) {
+  if (!value) return null;
+  try {
+    const url = new URL(value, origin || undefined);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+</script>

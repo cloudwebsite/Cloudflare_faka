@@ -1,0 +1,170 @@
+import { and, desc, eq, sql } from "drizzle-orm";
+import { telefuncAction } from "@/server/telefunc-action";
+
+import { productSku, productV2, pushChannelConfig, siteSetting } from "@/database/drizzle/schema";
+import { appError } from "@/lib/app-error";
+import { SITE_TRANSLATION_FIELDS, normalizeContentTranslations, readContentTranslations, serializeContentTranslations, type ContentTranslationLocale, type ContentTranslations } from "@/lib/content-translations";
+import { BASE_CURRENCY, convertFromBaseMinor, currencyLabel, formatMinor, isCurrencyCode, parseExchangeRate, parseCurrencyRatesJson, stringifyCurrencyRates } from "@/lib/money";
+import { validateSiteSettingsInput, type SiteSettingsInput } from "@/lib/validators/site";
+import { sanitizeProductDescription } from "@/server/catalog/product-description";
+import { requireAdmin } from "@/server/telefunc-context";
+import { getSiteSettings, invalidateSiteSettings, storeCurrencyRates } from "./public-settings";
+
+async function internalOnGetSiteSettings() {
+  const { database } = requireAdmin();
+  const record = await getSiteSettings(database);
+  const { translationsJson, ...settings } = record;
+  return { ...settings, translations: readContentTranslations(translationsJson, SITE_TRANSLATION_FIELDS) };
+}
+
+function normalizeSiteTranslations(input: unknown) {
+  const translations = normalizeContentTranslations(input, SITE_TRANSLATION_FIELDS);
+  const values: ContentTranslations = {};
+  for (const [locale, content] of Object.entries(translations)) {
+    if (!content) continue;
+    if ((content.subtitle?.length ?? 0) > 300) appError("SITE_SUBTITLE_TOO_LONG");
+    if ((content.notice?.length ?? 0) > 50_000) appError("SITE_NOTICE_TOO_LONG");
+    if ((content.footerText?.length ?? 0) > 1_000) appError("SITE_FOOTER_TEXT_TOO_LONG");
+    if ((content.orderNotice?.length ?? 0) > 2_000) appError("SITE_ORDER_NOTICE_TOO_LONG");
+    if ((content.supportContact?.length ?? 0) > 2_000) appError("SITE_SUPPORT_CONTACT_TOO_LONG");
+    values[locale as ContentTranslationLocale] = content;
+  }
+  return values;
+}
+
+async function internalOnSaveSiteSettings(input: SiteSettingsInput) {
+  const { database, db } = requireAdmin();
+  const values = validateSiteSettingsInput(input);
+  if (values.registrationEnabled) {
+    const [smtpProvider] = await db
+      .select({ provider: pushChannelConfig.provider, configJson: pushChannelConfig.configJson })
+      .from(pushChannelConfig)
+      .where(and(eq(pushChannelConfig.channel, "EMAIL"), eq(pushChannelConfig.provider, "SMTP"), eq(pushChannelConfig.isEnabled, true)))
+      .limit(1);
+    if (!smtpProvider) appError("REGISTRATION_SMTP_REQUIRED");
+  }
+  const notice = values.notice ? (sanitizeProductDescription(values.notice) ?? null) : null;
+  const payload = { ...values, notice };
+  const now = new Date();
+  const translationsJson = serializeContentTranslations(normalizeSiteTranslations(input.translations), SITE_TRANSLATION_FIELDS);
+  const [record] = await db
+    .insert(siteSetting)
+    .values({ id: 1, ...payload, translationsJson, createdAt: now, updatedAt: now })
+    .onConflictDoUpdate({ target: siteSetting.id, set: { ...payload, translationsJson, updatedAt: now } })
+    .returning();
+
+  if (!record) appError("SITE_SETTINGS_NOT_FOUND");
+  invalidateSiteSettings(database);
+  const { translationsJson: savedTranslationsJson, ...saved } = record;
+  return { ...saved, translations: readContentTranslations(savedTranslationsJson, SITE_TRANSLATION_FIELDS) };
+}
+
+export const onGetSiteSettings = telefuncAction(internalOnGetSiteSettings);
+export const onSaveSiteSettings = telefuncAction(internalOnSaveSiteSettings);
+
+const CURRENCY_PREVIEW_LIMIT = 5;
+const EXAMPLE_CNY_MINOR = [90, 990, 5000, 10000, 20000];
+
+async function internalOnGetCurrencySwitchPreview(input: { currency: string; exchangeRate: number | string }) {
+  const { db } = requireAdmin();
+  if (!isCurrencyCode(input?.currency)) appError("SITE_CURRENCY_INVALID");
+  const currency = input.currency;
+  const rate = currency === BASE_CURRENCY ? 1 : parseExchangeRate(input.exchangeRate);
+  if (rate === null) appError("SITE_EXCHANGE_RATE_INVALID");
+
+  const rows = await db
+    .select({ name: productV2.name, price: sql<number>`max(${productSku.price})` })
+    .from(productSku)
+    .innerJoin(productV2, and(eq(productSku.productId, productV2.id), eq(productV2.status, "ACTIVE")))
+    .where(eq(productSku.status, "ACTIVE"))
+    .groupBy(productV2.id, productV2.name)
+    .orderBy(desc(sql`max(${productSku.price})`))
+    .limit(CURRENCY_PREVIEW_LIMIT);
+
+  const items = rows.length
+    ? rows.map((row) => ({
+        name: row.name,
+        cnyMinor: Number(row.price),
+        convertedMinor: convertFromBaseMinor(Number(row.price), currency, rate),
+      }))
+    : EXAMPLE_CNY_MINOR.map((price, index) => ({
+        name: `示例商品${index + 1}`,
+        cnyMinor: price,
+        convertedMinor: convertFromBaseMinor(price, currency, rate),
+      }));
+
+  return {
+    currency,
+    currencyLabel: currencyLabel(currency),
+    exchangeRate: rate,
+    items: items.map((item) => ({
+      ...item,
+      cnyAmount: formatMinor(item.cnyMinor, BASE_CURRENCY),
+      convertedAmount: formatMinor(item.convertedMinor, currency),
+    })),
+    hasProducts: rows.length > 0,
+  };
+}
+
+async function internalOnSwitchCurrency(input: { currency: string; exchangeRate: number | string }) {
+  const { database, db } = requireAdmin();
+  if (!isCurrencyCode(input?.currency)) appError("SITE_CURRENCY_INVALID");
+  const currency = input.currency;
+  const rate = currency === BASE_CURRENCY ? 1 : parseExchangeRate(input.exchangeRate);
+  if (rate === null) appError("SITE_EXCHANGE_RATE_INVALID");
+
+  const current = await getSiteSettings(database);
+  const rates = { ...storeCurrencyRates(current) };
+  rates[currency] = rate;
+  rates[BASE_CURRENCY] = 1;
+  const currencyRatesJson = stringifyCurrencyRates(rates);
+
+  const now = new Date();
+  const [record] = await db
+    .update(siteSetting)
+    .set({ currency, exchangeRate: rate, currencyRatesJson, currencyUpdatedAt: now, updatedAt: now })
+    .where(eq(siteSetting.id, 1))
+    .returning();
+  if (!record) appError("SITE_SETTINGS_NOT_FOUND");
+  invalidateSiteSettings(database);
+  return { currency: record.currency, exchangeRate: record.exchangeRate, currencyRates: parseCurrencyRatesJson(record.currencyRatesJson, currency, rate), currencyUpdatedAt: record.currencyUpdatedAt };
+}
+
+async function internalOnSaveCurrencyRates(input: { rates: Record<string, number | string> }) {
+  const { database, db } = requireAdmin();
+  const current = await getSiteSettings(database);
+  const rates = { ...storeCurrencyRates(current) };
+  for (const [code, value] of Object.entries(input?.rates ?? {})) {
+    if (!isCurrencyCode(code)) continue;
+    if (code === BASE_CURRENCY) {
+      rates[code] = 1;
+      continue;
+    }
+    const rate = parseExchangeRate(value);
+    if (rate === null) appError("SITE_EXCHANGE_RATE_INVALID");
+    rates[code] = rate;
+  }
+  rates[BASE_CURRENCY] = 1;
+  const display = isCurrencyCode(current.currency) ? current.currency : BASE_CURRENCY;
+  const displayRate = rates[display] ?? (display === BASE_CURRENCY ? 1 : null);
+  if (displayRate === null) appError("SITE_EXCHANGE_RATE_INVALID");
+  const now = new Date();
+  const [record] = await db
+    .update(siteSetting)
+    .set({
+      currencyRatesJson: stringifyCurrencyRates(rates),
+      exchangeRate: displayRate,
+      currencyUpdatedAt: now,
+      updatedAt: now,
+    })
+    .where(eq(siteSetting.id, 1))
+    .returning();
+  if (!record) appError("SITE_SETTINGS_NOT_FOUND");
+  invalidateSiteSettings(database);
+  return { currencyRates: storeCurrencyRates(record), exchangeRate: record.exchangeRate };
+}
+
+export const onGetCurrencySwitchPreview = telefuncAction(internalOnGetCurrencySwitchPreview);
+export const onSwitchCurrency = telefuncAction(internalOnSwitchCurrency);
+export const onSaveCurrencyRates = telefuncAction(internalOnSaveCurrencyRates);
+

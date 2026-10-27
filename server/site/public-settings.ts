@@ -1,0 +1,146 @@
+import { eq } from "drizzle-orm";
+import { siteSetting } from "@/database/drizzle/schema";
+import { createDrizzleDb } from "@/database/drizzle";
+import { SITE_TRANSLATION_FIELDS, readContentTranslations } from "@/lib/content-translations";
+import { buildLocalizedOptionalText, buildLocalizedText, type LocalizedNullableText, type LocalizedText } from "@/lib/i18n/localized-text";
+import { BASE_CURRENCY, isCurrencyCode, isValidExchangeRate, parseCurrencyRatesJson, rateForCurrency, type CurrencyCode } from "@/lib/money";
+import {
+  DEFAULT_STOREFRONT_LAYOUT,
+  DEFAULT_STOREFRONT_SKIN,
+  normalizeStorefrontLayout,
+  normalizeStorefrontSkin,
+} from "@/lib/storefront-templates/registry";
+import type { StorefrontLayoutId, StorefrontSkinId } from "@/lib/storefront-templates/types";
+import { resolveSupportChannels, type SupportChannel } from "@/lib/support-contact";
+
+export { SITE_TRANSLATION_FIELDS };
+
+export type PublicSiteSettings = {
+  name: string;
+  subtitle: LocalizedNullableText;
+  siteUrl: string | null;
+  logo: string | null;
+  logoIcon: string | null;
+  notice: LocalizedNullableText;
+  supportContact: LocalizedNullableText;
+  supportChannels: SupportChannel[];
+  footerText: LocalizedText;
+  orderNotice: LocalizedNullableText;
+  /** Default browse/display currency (not the sole settlement currency). */
+  currency: CurrencyCode;
+  /** `1 CNY = rate` map for settlement/display conversion. */
+  currencyRates: Record<CurrencyCode, number>;
+  layout: StorefrontLayoutId;
+  skin: StorefrontSkinId;
+};
+
+type SiteSettingRecord = typeof siteSetting.$inferSelect;
+
+type CacheEntry = {
+  value: SiteSettingRecord;
+  expiresAt: number;
+};
+
+const CACHE_TTL_MS = 60_000;
+let settingsCache: CacheEntry | null = null;
+
+export const DEFAULT_FOOTER_TEXT = "© 2026 Cloudflare_faka 基于 GitHub 开源";
+
+const defaultSettings: SiteSettingRecord = {
+  id: 1,
+  siteName: "faka-Shop",
+  siteUrl: null,
+  siteSubtitle: null,
+  logo: null,
+  logoIcon: null,
+  notice: null,
+  supportContact: null,
+  supportQq: null,
+  supportTelegram: null,
+  supportWechat: null,
+  supportWechatQr: null,
+  supportEmail: null,
+  supportCustomLinks: null,
+  footerText: null,
+  orderNotice: null,
+  headCode: null,
+  footerCode: null,
+  translationsJson: null,
+  registrationEnabled: false,
+  timezone: "Asia/Shanghai",
+  currency: BASE_CURRENCY,
+  exchangeRate: 1,
+  currencyRatesJson: null,
+  currencyUpdatedAt: null,
+  storefrontLayout: DEFAULT_STOREFRONT_LAYOUT,
+  storefrontSkin: DEFAULT_STOREFRONT_SKIN,
+  createdAt: new Date(0),
+  updatedAt: new Date(0),
+};
+
+async function querySettings(database: D1Database) {
+  const db = createDrizzleDb(database);
+  const [record] = await db.select().from(siteSetting).where(eq(siteSetting.id, 1)).limit(1);
+  return record ?? defaultSettings;
+}
+
+export async function getSiteSettings(database: D1Database) {
+  if (settingsCache && settingsCache.expiresAt > Date.now()) return settingsCache.value;
+
+  const value = await querySettings(database);
+  settingsCache = { value, expiresAt: Date.now() + CACHE_TTL_MS };
+  return value;
+}
+
+export function invalidateSiteSettings(_database?: D1Database) {
+  settingsCache = null;
+}
+
+export function toPublicSiteSettings(record: SiteSettingRecord): PublicSiteSettings {
+  const translations = readContentTranslations(record.translationsJson, SITE_TRANSLATION_FIELDS);
+  const supportContactBase = record.supportContact?.trim() || null;
+  const supportChannels = resolveSupportChannels({
+    supportQq: record.supportQq,
+    supportTelegram: record.supportTelegram,
+    supportWechat: record.supportWechat,
+    supportWechatQr: record.supportWechatQr,
+    supportEmail: record.supportEmail,
+    supportCustomLinks: record.supportCustomLinks,
+    supportContact: supportContactBase,
+  });
+
+  return {
+    name: record.siteName,
+    subtitle: buildLocalizedOptionalText(record.siteSubtitle, translations, "subtitle"),
+    siteUrl: record.siteUrl,
+    logo: record.logo,
+    logoIcon: record.logoIcon || record.logo,
+    notice: buildLocalizedOptionalText(record.notice, translations, "notice"),
+    supportContact: buildLocalizedOptionalText(supportContactBase, translations, "supportContact"),
+    supportChannels,
+    footerText: buildLocalizedText(record.footerText?.trim() || DEFAULT_FOOTER_TEXT, translations, "footerText"),
+    orderNotice: buildLocalizedOptionalText(record.orderNotice, translations, "orderNotice"),
+    currency: isCurrencyCode(record.currency) ? record.currency : BASE_CURRENCY,
+    currencyRates: storeCurrencyRates(record),
+    layout: normalizeStorefrontLayout(record.storefrontLayout),
+    skin: normalizeStorefrontSkin(record.storefrontSkin),
+  };
+}
+
+/** The settings row is validated on write; these guards keep old rows usable. */
+export function storeCurrency(record: SiteSettingRecord): CurrencyCode {
+  return isCurrencyCode(record.currency) ? record.currency : BASE_CURRENCY;
+}
+
+export function storeExchangeRate(record: SiteSettingRecord): number {
+  return isValidExchangeRate(record.exchangeRate) ? record.exchangeRate : 1;
+}
+
+/** Full rate table; falls back to legacy single `exchangeRate` for the display currency. */
+export function storeCurrencyRates(record: SiteSettingRecord): Record<CurrencyCode, number> {
+  return parseCurrencyRatesJson(record.currencyRatesJson, storeCurrency(record), storeExchangeRate(record));
+}
+
+export function storeRateForCurrency(record: SiteSettingRecord, currency: CurrencyCode): number | null {
+  return rateForCurrency(storeCurrencyRates(record), currency);
+}

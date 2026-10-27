@@ -1,0 +1,828 @@
+<template>
+  <section class="flex w-full flex-col gap-6">
+    <AdminPageHeader />
+
+    <Alert v-if="error" variant="destructive">
+      <AlertTitle>操作未完成</AlertTitle>
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
+
+    <div>
+      <form id="site-settings-form" class="border-t" novalidate @submit.prevent="saveSettings">
+        <div class="px-6 py-6">
+          <FieldGroup class="gap-5">
+            <FieldSet class="gap-4">
+              <FieldLegend>多语言内容</FieldLegend>
+              <Field>
+                <FieldLabel for="site-locale">编辑语言</FieldLabel>
+                <Select :model-value="editorLocale" @update:model-value="setEditorLocale"><SelectTrigger id="site-locale" class="w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem v-for="option in localeOptions" :key="option.value" :value="option.value">{{ option.label }}</SelectItem></SelectContent></Select>
+                <FieldDescription>切换语言只影响副标题、首页公告、页脚文案、下单提示和邮件摘要；留空时回退到简体中文。其他设置对所有语言生效。</FieldDescription>
+              </Field>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet class="gap-4">
+              <FieldLegend>展示货币与汇率</FieldLegend>
+              <div class="flex flex-wrap items-center justify-between gap-4 rounded-md border p-4">
+                <div class="grid gap-1">
+                  <p class="text-sm font-medium">商品列表展示为 {{ currencyLabel(currency) }}</p>
+                  <p class="text-xs text-muted-foreground">当前汇率：{{ currentRateText }}</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" @click="openRatesDialog">编辑汇率</Button>
+                  <Button type="button" variant="destructive" @click="openCurrencyDialog">切换展示货币</Button>
+                </div>
+              </div>
+              <FieldDescription>商品仍按人民币定价。列表默认按展示货币显示价格；买家实际支付的币种由所选支付方式决定，系统会按汇率自动换算（不足 1 分等最小单位时会向上进位）。</FieldDescription>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet class="gap-4">
+              <FieldLegend>基础信息</FieldLegend>
+              <div class="grid gap-4 md:grid-cols-2">
+                <VeeField v-slot="{ componentField, errors }" name="siteName" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-name">站点名称</FieldLabel>
+                    <Input id="site-name" v-bind="componentField" autocomplete="organization" placeholder="FAKA-Shop" :aria-invalid="errors.length > 0" />
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+
+                <VeeField v-slot="{ componentField, errors }" name="siteSubtitle" :validate-on-input="true">
+                  <Field v-show="editorLocale === 'zh-CN'" :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-subtitle">副标题 / 默认 SEO 描述</FieldLabel>
+                    <Input id="site-subtitle" v-bind="componentField" placeholder="例如：安全、稳定的自动发卡商城" :aria-invalid="errors.length > 0" />
+                    <FieldDescription>同时用作公开首页副标题和默认 description。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+                <Field v-show="editorLocale !== 'zh-CN'">
+                  <FieldLabel for="site-subtitle">副标题 / 默认 SEO 描述（{{ localeLabel(editorLocale) }}）</FieldLabel>
+                  <Input id="site-subtitle" v-model="activeTranslation.subtitle" maxlength="300" placeholder="例如：安全、稳定的自动发卡商城" />
+                  <FieldDescription>同时用作公开首页副标题和默认 description。</FieldDescription>
+                </Field>
+              </div>
+
+              <div class="grid gap-4 md:grid-cols-2">
+                <VeeField v-slot="{ componentField, errors }" name="siteUrl" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-url">网站地址</FieldLabel>
+                    <Input id="site-url" v-bind="componentField" type="url" inputmode="url" placeholder="https://shop.example.com" :aria-invalid="errors.length > 0" />
+                    <FieldDescription>用于 canonical 和社交分享链接，建议填写站点对外访问地址。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+
+                <VeeField v-slot="{ componentField, errors }" name="timezone">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-timezone">站点时区</FieldLabel>
+                    <Combobox :model-value="componentField.modelValue" open-on-focus open-on-click @update:model-value="componentField['onUpdate:modelValue']">
+                      <ComboboxAnchor class="flex h-9 w-full items-center rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs">
+                        <ComboboxInput id="site-timezone" :display-value="timezoneDisplayValue" placeholder="搜索标准时区" :aria-invalid="errors.length > 0" />
+                        <ComboboxTrigger class="ml-auto"><ChevronsUpDownIcon class="size-4 shrink-0 opacity-50" /></ComboboxTrigger>
+                      </ComboboxAnchor>
+                      <ComboboxList class="w-(--reka-combobox-trigger-width)">
+                        <ComboboxViewport class="max-h-72 overflow-y-scroll">
+                          <ComboboxEmpty>未找到匹配的标准时区。</ComboboxEmpty>
+                          <ComboboxGroup>
+                            <ComboboxItem v-for="item in timezones" :key="item.value" :value="item.value" :text-value="item.value">{{ item.label }}</ComboboxItem>
+                          </ComboboxGroup>
+                        </ComboboxViewport>
+                      </ComboboxList>
+                    </Combobox>
+                    <FieldDescription>用于订单、日志和定时任务中的日期时间展示。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+              </div>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet class="gap-4">
+              <FieldLegend>品牌资源</FieldLegend>
+              <div class="grid gap-4 md:grid-cols-2">
+                <VeeField v-slot="{ componentField, errors }" name="logoIcon" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-favicon">网站 Favicon 地址</FieldLabel>
+                    <div class="flex gap-2">
+                      <Input id="site-favicon" v-bind="componentField" type="url" inputmode="url" placeholder="https://example.com/favicon.png" :aria-invalid="errors.length > 0" />
+                      <Button type="button" variant="outline" @click="mediaPickerTarget = 'logoIcon'">选择图片</Button>
+                    </div>
+                    <FieldDescription>支持媒体库中的 PNG、JPEG、GIF 或 WebP，也可手工填写公开图片地址。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+
+                <VeeField v-slot="{ componentField, errors }" name="logo" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-logo">网站 Logo 地址</FieldLabel>
+                    <div class="flex gap-2">
+                      <Input id="site-logo" v-bind="componentField" type="url" inputmode="url" placeholder="https://example.com/logo.png" :aria-invalid="errors.length > 0" />
+                      <Button type="button" variant="outline" @click="mediaPickerTarget = 'logo'">选择图片</Button>
+                    </div>
+                    <FieldDescription>用于公开商城导航和社交分享图片 fallback。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+              </div>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet id="storefront-templates" class="gap-4 rounded-lg border border-dashed border-primary/40 bg-muted/20 p-4">
+              <FieldLegend variant="legend">前台模板</FieldLegend>
+              <FieldDescription>选择公开商城的布局与配色，保存后整站前台立即生效。布局与皮肤可自由组合。</FieldDescription>
+
+              <VeeField v-slot="{ componentField, errors }" name="storefrontLayout">
+                <Field :data-invalid="errors.length > 0">
+                  <FieldLabel>布局模板</FieldLabel>
+                  <div class="grid gap-3 sm:grid-cols-2">
+                    <button
+                      v-for="layout in storefrontLayouts"
+                      :key="layout.id"
+                      type="button"
+                      class="rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted/50"
+                      :class="componentField.modelValue === layout.id ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-border'"
+                      @click="componentField['onUpdate:modelValue'](layout.id)"
+                    >
+                      <div class="mb-3 h-16 overflow-hidden rounded-md border bg-muted/40 p-2">
+                        <div v-if="layout.id === 'classic'" class="grid h-full grid-cols-4 gap-1">
+                          <div v-for="n in 4" :key="n" class="rounded-sm border bg-background" />
+                        </div>
+                        <div v-else-if="layout.id === 'marketplace'" class="grid h-full grid-cols-5 gap-0.5">
+                          <div v-for="n in 5" :key="n" class="rounded-sm border bg-background" />
+                        </div>
+                        <div v-else-if="layout.id === 'magazine'" class="flex h-full flex-col gap-1">
+                          <div class="h-1/2 rounded-sm border bg-background" />
+                          <div class="flex flex-1 flex-col gap-0.5"><div class="flex-1 rounded-sm border bg-background" /><div class="flex-1 rounded-sm border bg-background" /></div>
+                        </div>
+                        <div v-else-if="layout.id === 'sidebar'" class="flex h-full gap-1">
+                          <div class="w-1/4 rounded-sm border bg-background" />
+                          <div class="grid flex-1 grid-cols-2 gap-0.5"><div class="rounded-sm border bg-background" /><div class="rounded-sm border bg-background" /><div class="rounded-sm border bg-background" /><div class="rounded-sm border bg-background" /></div>
+                        </div>
+                        <div v-else-if="layout.id === 'lanyao'" class="flex h-full flex-col gap-1">
+                          <div class="grid flex-1 grid-cols-4 gap-0.5"><div v-for="n in 4" :key="n" class="rounded-sm border bg-background" /></div>
+                          <div class="grid h-1/3 grid-cols-3 gap-0.5"><div v-for="n in 3" :key="n" class="rounded-sm border bg-primary/20" /></div>
+                        </div>
+                        <div v-else-if="layout.id === 'quickcard'" class="flex h-full gap-0.5">
+                          <div class="w-1/5 rounded-sm border bg-background" />
+                          <div class="w-2/5 rounded-sm border bg-background" />
+                          <div class="flex-1 rounded-sm border bg-primary/20" />
+                        </div>
+                        <div v-else-if="layout.id === 'duocai'" class="flex h-full flex-col gap-1">
+                          <div class="h-2/5 rounded-sm border bg-primary/15" />
+                          <div class="flex gap-0.5"><div v-for="n in 5" :key="n" class="aspect-square flex-1 rounded-full border bg-background" /></div>
+                          <div class="grid flex-1 grid-cols-3 gap-0.5"><div v-for="n in 3" :key="n" class="rounded-sm border bg-background" /></div>
+                        </div>
+                        <div v-else class="mx-auto flex h-full w-4/5 flex-col gap-1 rounded-md border bg-background p-1">
+                          <div class="h-1/4 rounded-sm bg-muted" />
+                          <div class="flex-1 space-y-0.5"><div class="h-2 rounded-sm bg-muted" /><div class="h-2 rounded-sm bg-muted" /><div class="h-2 rounded-sm bg-muted" /></div>
+                        </div>
+                      </div>
+                      <p class="text-sm font-medium">{{ layout.name }}</p>
+                      <p class="mt-1 text-xs text-muted-foreground">{{ layout.description }}</p>
+                    </button>
+                  </div>
+                  <FieldError v-if="errors.length" :errors="errors" />
+                </Field>
+              </VeeField>
+
+              <VeeField v-slot="{ componentField, errors }" name="storefrontSkin">
+                <Field :data-invalid="errors.length > 0">
+                  <FieldLabel>配色皮肤</FieldLabel>
+                  <div class="flex flex-wrap gap-2">
+                    <button
+                      v-for="skin in storefrontSkins"
+                      :key="skin.id"
+                      type="button"
+                      class="inline-flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm transition-colors hover:bg-muted/50"
+                      :class="componentField.modelValue === skin.id ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-border'"
+                      :title="skin.description"
+                      @click="componentField['onUpdate:modelValue'](skin.id)"
+                    >
+                      <span class="size-4 rounded-full border" :style="{ backgroundColor: skin.swatch }" />
+                      {{ skin.name }}
+                    </button>
+                  </div>
+                  <FieldDescription>{{ storefrontSkins.find((item) => item.id === componentField.modelValue)?.description }}</FieldDescription>
+                  <FieldError v-if="errors.length" :errors="errors" />
+                </Field>
+              </VeeField>
+
+              <div v-if="previewHref" class="pt-1">
+                <Button type="button" variant="outline" size="sm" as-child>
+                  <a :href="previewHref" target="_blank" rel="noopener noreferrer">打开前台预览</a>
+                </Button>
+              </div>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet class="gap-4">
+              <FieldLegend>公开商城内容</FieldLegend>
+              <VeeField v-slot="{ errors }" name="notice">
+                <Field v-show="editorLocale === 'zh-CN'" :data-invalid="errors.length > 0">
+                  <FieldLabel>首页公告</FieldLabel>
+                  <ProductRichTextEditor
+                    :model-value="values.notice"
+                    placeholder="编辑首页公告，支持图片与链接…"
+                    compact
+                    @update:model-value="setFieldValue('notice', $event)"
+                  />
+                  <FieldDescription>支持富文本、图片与链接。首页超出部分会折叠，点击「详情」可查看全文。</FieldDescription>
+                  <FieldError v-if="errors.length" :errors="errors" />
+                </Field>
+              </VeeField>
+              <Field v-show="editorLocale !== 'zh-CN'">
+                <FieldLabel>首页公告（{{ localeLabel(editorLocale) }}）</FieldLabel>
+                <ProductRichTextEditor
+                  :model-value="activeTranslation.notice"
+                  placeholder="编辑首页公告，支持图片与链接…"
+                  compact
+                  @update:model-value="activeTranslation.notice = $event"
+                />
+                <FieldDescription>支持富文本、图片与链接。留空时回退到简体中文公告。</FieldDescription>
+              </Field>
+
+              <FieldSet class="gap-4 rounded-lg border bg-muted/10 p-4">
+                <FieldLegend variant="legend">客服联系方式</FieldLegend>
+                <FieldDescription>
+                  前台页脚「联系客服」将进入 <code>/support</code> 客服页。保存时会根据下方渠道自动生成邮件模板用的摘要。
+                </FieldDescription>
+
+                <div class="grid gap-4 md:grid-cols-2">
+                  <VeeField v-slot="{ componentField, errors }" name="supportQq" :validate-on-input="true">
+                    <Field :data-invalid="errors.length > 0">
+                      <FieldLabel for="site-support-qq">QQ 客服</FieldLabel>
+                      <Input id="site-support-qq" v-bind="componentField" placeholder="例如：123456789" :aria-invalid="errors.length > 0" />
+                      <FieldError v-if="errors.length" :errors="errors" />
+                    </Field>
+                  </VeeField>
+
+                  <VeeField v-slot="{ componentField, errors }" name="supportTelegram" :validate-on-input="true">
+                    <Field :data-invalid="errors.length > 0">
+                      <FieldLabel for="site-support-telegram">Telegram 客服</FieldLabel>
+                      <Input id="site-support-telegram" v-bind="componentField" placeholder="用户名，可不带 @" :aria-invalid="errors.length > 0" />
+                      <FieldError v-if="errors.length" :errors="errors" />
+                    </Field>
+                  </VeeField>
+
+                  <VeeField v-slot="{ componentField, errors }" name="supportWechat" :validate-on-input="true">
+                    <Field :data-invalid="errors.length > 0">
+                      <FieldLabel for="site-support-wechat">微信客服</FieldLabel>
+                      <Input id="site-support-wechat" v-bind="componentField" placeholder="微信号" :aria-invalid="errors.length > 0" />
+                      <FieldError v-if="errors.length" :errors="errors" />
+                    </Field>
+                  </VeeField>
+
+                  <VeeField v-slot="{ componentField, errors }" name="supportEmail" :validate-on-input="true">
+                    <Field :data-invalid="errors.length > 0">
+                      <FieldLabel for="site-support-email">邮箱客服</FieldLabel>
+                      <Input id="site-support-email" v-bind="componentField" type="email" inputmode="email" placeholder="support@example.com" :aria-invalid="errors.length > 0" />
+                      <FieldError v-if="errors.length" :errors="errors" />
+                    </Field>
+                  </VeeField>
+                </div>
+
+                <VeeField v-slot="{ componentField, errors }" name="supportWechatQr" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-support-wechat-qr">微信客服二维码</FieldLabel>
+                    <div class="flex gap-2">
+                      <Input id="site-support-wechat-qr" v-bind="componentField" type="url" inputmode="url" placeholder="https://example.com/wechat-qr.png" :aria-invalid="errors.length > 0" />
+                      <Button type="button" variant="outline" @click="mediaPickerTarget = 'supportWechatQr'">选择图片</Button>
+                    </div>
+                    <FieldDescription>可从媒体库选择，或直接粘贴公开图片地址。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+
+                <VeeField v-slot="{ componentField, errors }" name="supportCustomLinks" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-support-custom-links">自定义链接</FieldLabel>
+                    <Textarea
+                      id="site-support-custom-links"
+                      v-bind="componentField"
+                      rows="3"
+                      placeholder="每行一条，例如：企业微信|https://work.weixin.qq.com/..."
+                      :aria-invalid="errors.length > 0"
+                    />
+                    <FieldDescription>每行一条，格式：显示文字|链接地址。用于 Discord、企业微信等额外渠道。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+
+                <Field v-show="editorLocale === 'zh-CN'">
+                  <FieldLabel>邮件摘要预览</FieldLabel>
+                  <Textarea :model-value="supportSummaryPreview" rows="3" readonly class="bg-muted/40 font-mono text-xs" />
+                  <FieldDescription>保存后写入 `supportContact`，供邮件/推送模板使用。未填写任何渠道时保持为空，不会写入默认值。</FieldDescription>
+                </Field>
+                <Field v-show="editorLocale !== 'zh-CN'">
+                  <FieldLabel for="site-support-contact-translation">邮件摘要（{{ localeLabel(editorLocale) }}）</FieldLabel>
+                  <Textarea id="site-support-contact-translation" v-model="activeTranslation.supportContact" rows="3" maxlength="2000" placeholder="供邮件/推送模板使用的客服摘要译文" />
+                  <FieldDescription>留空时回退到简体中文邮件摘要。</FieldDescription>
+                </Field>
+              </FieldSet>
+
+              <VeeField v-slot="{ componentField, errors }" name="footerText" :validate-on-input="true">
+                <Field v-show="editorLocale === 'zh-CN'" :data-invalid="errors.length > 0">
+                  <FieldLabel for="site-footer-text">页脚文案</FieldLabel>
+                  <Textarea id="site-footer-text" v-bind="componentField" rows="3" placeholder="例如：© 2026 FAKA 版权所有" :aria-invalid="errors.length > 0" />
+                  <FieldError v-if="errors.length" :errors="errors" />
+                </Field>
+              </VeeField>
+              <Field v-show="editorLocale !== 'zh-CN'">
+                <FieldLabel for="site-footer-text">页脚文案（{{ localeLabel(editorLocale) }}）</FieldLabel>
+                <Textarea id="site-footer-text" v-model="activeTranslation.footerText" rows="3" maxlength="1000" placeholder="例如：© 2026 FAKA 版权所有" />
+              </Field>
+
+              <VeeField v-slot="{ componentField, errors }" name="orderNotice" :validate-on-input="true">
+                <Field v-show="editorLocale === 'zh-CN'" :data-invalid="errors.length > 0">
+                  <FieldLabel for="site-order-notice">下单提示</FieldLabel>
+                  <Textarea id="site-order-notice" v-bind="componentField" rows="3" placeholder="展示在下单流程中的补充说明。" :aria-invalid="errors.length > 0" />
+                  <FieldError v-if="errors.length" :errors="errors" />
+                </Field>
+              </VeeField>
+              <Field v-show="editorLocale !== 'zh-CN'">
+                <FieldLabel for="site-order-notice">下单提示（{{ localeLabel(editorLocale) }}）</FieldLabel>
+                <Textarea id="site-order-notice" v-model="activeTranslation.orderNotice" rows="3" maxlength="2000" placeholder="展示在下单流程中的补充说明。" />
+              </Field>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet class="gap-4">
+              <FieldLegend>注册设置</FieldLegend>
+              <VeeField v-slot="{ componentField }" name="registrationEnabled">
+                <Field orientation="horizontal">
+                  <div class="flex-1">
+                    <FieldLabel for="registration-enabled">开放用户注册</FieldLabel>
+                    <FieldDescription>关闭后，访客无法创建新账号。</FieldDescription>
+                  </div>
+                  <Switch id="registration-enabled" :model-value="componentField.modelValue" @update:model-value="componentField['onUpdate:modelValue']" />
+                </Field>
+              </VeeField>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet class="gap-4">
+              <FieldLegend>自定义代码</FieldLegend>
+              <FieldDescription>当前仅保存代码，尚未启用页面注入。请勿填写密钥、令牌或用户数据。</FieldDescription>
+              <div class="grid gap-4 md:grid-cols-2">
+                <VeeField v-slot="{ componentField, errors }" name="headCode" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-head-code">页头代码（head）</FieldLabel>
+                    <Textarea id="site-head-code" v-bind="componentField" rows="6" spellcheck="false" class="min-h-36 font-mono text-xs leading-5" placeholder="&lt;meta name=&quot;...&quot; content=&quot;...&quot;&gt;" :aria-invalid="errors.length > 0" />
+                    <FieldDescription>预留用于第三方验证或额外 Meta 标签，启用前需经过安全审核。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+
+                <VeeField v-slot="{ componentField, errors }" name="footerCode" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-footer-code">页脚代码（body）</FieldLabel>
+                    <Textarea id="site-footer-code" v-bind="componentField" rows="6" spellcheck="false" class="min-h-36 font-mono text-xs leading-5" placeholder="&lt;script&gt;...&lt;/script&gt;" :aria-invalid="errors.length > 0" />
+                    <FieldDescription>预留用于可信脚本；启用前需确认脚本来源和安全性。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+              </div>
+            </FieldSet>
+          </FieldGroup>
+        </div>
+
+        <div class="flex justify-end border-t px-6 py-4">
+          <Button type="submit" :disabled="loading">{{ loading ? "保存中..." : "保存设置" }}</Button>
+        </div>
+      </form>
+    </div>
+    <MediaPickerDialog :open="mediaPickerTarget !== null" @update:open="(open) => { if (!open) mediaPickerTarget = null; }" @select="setSelectedImage" />
+
+    <Dialog :open="ratesDialogOpen" @update:open="(open) => { if (!open) ratesDialogOpen = false; }">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>编辑汇率</DialogTitle>
+          <DialogDescription>填写「1 人民币等于多少外币」。支付方式用到的币种若未填写，买家将无法用该方式下单。</DialogDescription>
+        </DialogHeader>
+        <div class="grid max-h-80 gap-3 overflow-y-auto">
+          <label v-for="item in rateEditOptions" :key="item.code" class="grid gap-1 text-sm font-medium">
+            <span>1 人民币 = ? {{ item.name }}（{{ item.code }}）</span>
+            <Input v-model="ratesForm[item.code]" :disabled="item.code === 'CNY'" inputmode="decimal" placeholder="例如 0.149" />
+          </label>
+        </div>
+        <DialogFooter>
+          <DialogClose as-child><Button type="button" variant="outline">取消</Button></DialogClose>
+          <Button type="button" :disabled="ratesSaving" @click="saveRates">{{ ratesSaving ? "保存中..." : "保存汇率" }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="currencyDialogOpen" @update:open="(open) => { if (!open) currencyDialogOpen = false; }">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>切换展示货币</DialogTitle>
+          <DialogDescription>商品仍按人民币定价。切换后，商品列表会按新货币显示；买家实际支付的币种仍由支付方式决定。</DialogDescription>
+        </DialogHeader>
+        <div class="grid gap-4">
+          <label class="grid gap-2 text-sm font-medium">展示货币
+            <Select :model-value="currencyForm.currency" @update:model-value="onCurrencyChange">
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem v-for="item in currencyOptions" :key="item.code" :value="item.code">{{ item.label }}</SelectItem></SelectContent>
+            </Select>
+          </label>
+          <label class="grid gap-2 text-sm font-medium">汇率（1 人民币 = ? {{ currencyForm.currency }}）
+            <Input v-model="currencyForm.rate" :disabled="currencyForm.currency === 'CNY'" inputmode="decimal" placeholder="例如 0.149" />
+          </label>
+          <p class="text-xs text-muted-foreground">{{ previewRateText }}</p>
+        </div>
+        <DialogFooter>
+          <DialogClose as-child><Button type="button" variant="outline">取消</Button></DialogClose>
+          <Button type="button" :disabled="currencyPreviewLoading" @click="openCurrencyConfirm">{{ currencyPreviewLoading ? "计算中..." : "下一步" }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="currencyConfirmOpen" @update:open="(open) => { if (!open) currencyConfirmOpen = false; }">
+      <DialogContent class="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>确认切换为 {{ currencyLabel(currencyForm.currency) }}</DialogTitle>
+          <DialogDescription>商品列表标价将按新汇率重算。买家实际支付币种仍由支付方式决定。新汇率：1 人民币 = {{ currencyForm.rate }} {{ currencyMeta(currencyForm.currency).name }}。</DialogDescription>
+        </DialogHeader>
+        <div class="grid gap-2">
+          <p class="text-sm font-medium">价格预览（按人民币原价从高到低）</p>
+          <div class="max-h-64 overflow-y-auto rounded-md border">
+            <div v-for="(item, index) in currencyPreview" :key="`${item.name}-${index}`" class="flex items-center justify-between gap-4 border-b px-3 py-2 text-sm last:border-b-0">
+              <span class="min-w-0 truncate">{{ item.name }}</span>
+              <span class="shrink-0 tabular-nums">{{ item.cnyAmount }} → {{ item.convertedAmount }}</span>
+            </div>
+          </div>
+          <p v-if="!currencyPreviewHasProducts" class="text-xs text-muted-foreground">当前没有已上架商品，以上为示例价格。</p>
+        </div>
+        <DialogFooter>
+          <DialogClose as-child><Button type="button" variant="outline">取消</Button></DialogClose>
+          <Button type="button" variant="destructive" :disabled="currencySwitching" @click="confirmCurrencySwitch">{{ currencySwitching ? "切换中..." : `切换到${currencyLabel(currencyForm.currency)}` }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </section>
+</template>
+
+<script lang="ts" setup>
+import { computed, onMounted, reactive, ref } from "vue";
+
+import MediaPickerDialog from "@/components/admin/MediaPickerDialog.vue";
+
+import { toTypedSchema } from "@vee-validate/zod";
+import { Field as VeeField, useForm } from "vee-validate";
+import { z } from "zod";
+import AdminPageHeader from "@/components/admin/AdminPageHeader.vue";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSeparator, FieldSet } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+
+import { Combobox, ComboboxAnchor, ComboboxEmpty, ComboboxGroup, ComboboxInput, ComboboxItem, ComboboxList, ComboboxTrigger, ComboboxViewport } from "@/components/ui/combobox";
+import { ChevronsUpDownIcon } from "@lucide/vue";
+import { Textarea } from "@/components/ui/textarea";
+import { SUPPORTED_CURRENCIES, currencyLabel, currencyMeta, formatRate, isCurrencyCode, parseCurrencyRatesJson, parseExchangeRate, type CurrencyCode } from "@/lib/money";
+import { SITE_TIMEZONES } from "@/lib/site-timezone";
+import { STOREFRONT_LAYOUTS, STOREFRONT_SKINS } from "@/lib/storefront-templates/registry";
+import { STOREFRONT_LAYOUT_IDS, STOREFRONT_SKIN_IDS } from "@/lib/storefront-templates/types";
+import { buildSupportContactSummary } from "@/lib/support-contact";
+import { runTelefunc, userErrorMessage } from "@/lib/telefunc-client";
+import ProductRichTextEditor from "@/pages/@adminPath/catalog/products/ProductRichTextEditor.vue";
+import { onGetCurrencySwitchPreview, onGetSiteSettings, onSaveCurrencyRates, onSaveSiteSettings, onSwitchCurrency } from "@/server/site/admin.telefunc";
+
+const storefrontLayouts = STOREFRONT_LAYOUTS;
+const storefrontSkins = STOREFRONT_SKINS;
+
+const urlMessage = "请输入有效的 HTTP 或 HTTPS 地址。";
+const optionalUrl = z.string().trim().refine((value) => {
+  if (!value) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}, urlMessage);
+
+const formSchema = toTypedSchema(z.object({
+  siteName: z.string().trim().min(1, "请输入站点名称。").max(120, "站点名称不能超过 120 个字符。"),
+  siteSubtitle: z.string().trim().max(300, "副标题不能超过 300 个字符。"),
+  siteUrl: optionalUrl,
+  timezone: z.string().trim().min(1, "请选择站点时区。").max(64, "站点时区不能超过 64 个字符。"),
+  logoIcon: optionalUrl,
+  logo: optionalUrl,
+  notice: z.string().max(50_000, "首页公告不能超过 50,000 个字符。"),
+  supportQq: z.string().trim().max(32, "QQ 客服不能超过 32 个字符。"),
+  supportTelegram: z.string().trim().max(64, "Telegram 客服不能超过 64 个字符。"),
+  supportWechat: z.string().trim().max(64, "微信客服不能超过 64 个字符。"),
+  supportWechatQr: optionalUrl,
+  supportEmail: z.string().trim().refine((value) => {
+    if (!value) return true;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }, "请输入有效的客服邮箱地址。"),
+  supportCustomLinks: z.string().trim().max(2_000, "自定义客服链接不能超过 2,000 个字符。"),
+  supportContact: z.string().trim().max(2_000, "客服联系方式不能超过 2,000 个字符。"),
+  footerText: z.string().trim().max(1_000, "页脚文案不能超过 1,000 个字符。"),
+  orderNotice: z.string().trim().max(2_000, "下单提示不能超过 2,000 个字符。"),
+  headCode: z.string().trim().max(20_000, "页头代码不能超过 20,000 个字符。"),
+  footerCode: z.string().trim().max(20_000, "页脚代码不能超过 20,000 个字符。"),
+  registrationEnabled: z.boolean(),
+  storefrontLayout: z.enum(STOREFRONT_LAYOUT_IDS),
+  storefrontSkin: z.enum(STOREFRONT_SKIN_IDS),
+}));
+
+type FormValues = {
+  siteName: string;
+  siteUrl: string;
+  siteSubtitle: string;
+  logo: string;
+  logoIcon: string;
+  notice: string;
+  supportQq: string;
+  supportTelegram: string;
+  supportWechat: string;
+  supportWechatQr: string;
+  supportEmail: string;
+  supportCustomLinks: string;
+  supportContact: string;
+  footerText: string;
+  orderNotice: string;
+  headCode: string;
+  footerCode: string;
+  registrationEnabled: boolean;
+  timezone: string;
+  storefrontLayout: (typeof STOREFRONT_LAYOUT_IDS)[number];
+  storefrontSkin: (typeof STOREFRONT_SKIN_IDS)[number];
+};
+
+const timezones = SITE_TIMEZONES.map((value) => ({ value, label: value }));
+
+type EditorLocale = "zh-CN" | "zh-TW" | "en-US";
+type SiteTranslation = { subtitle: string; notice: string; footerText: string; orderNotice: string; supportContact: string };
+const localeOptions: Array<{ value: EditorLocale; label: string }> = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "en-US", label: "English" },
+];
+const editorLocale = ref<EditorLocale>("zh-CN");
+const translations = reactive<Record<"zh-TW" | "en-US", SiteTranslation>>({
+  "zh-TW": { subtitle: "", notice: "", footerText: "", orderNotice: "", supportContact: "" },
+  "en-US": { subtitle: "", notice: "", footerText: "", orderNotice: "", supportContact: "" },
+});
+const emptyTranslation: SiteTranslation = { subtitle: "", notice: "", footerText: "", orderNotice: "", supportContact: "" };
+const activeTranslation = computed(() => (editorLocale.value === "zh-CN" ? emptyTranslation : translations[editorLocale.value]));
+
+function localeLabel(locale: EditorLocale) { return localeOptions.find((item) => item.value === locale)?.label ?? locale; }
+function setEditorLocale(next: unknown) {
+  if (next !== "zh-CN" && next !== "zh-TW" && next !== "en-US") return;
+  editorLocale.value = next;
+}
+
+const initialValues: FormValues = {
+  siteName: "FAKA-Shop",
+  siteUrl: "",
+  siteSubtitle: "",
+  logo: "",
+  logoIcon: "",
+  notice: "",
+  supportQq: "",
+  supportTelegram: "",
+  supportWechat: "",
+  supportWechatQr: "",
+  supportEmail: "",
+  supportCustomLinks: "",
+  supportContact: "",
+  footerText: "",
+  orderNotice: "",
+  headCode: "",
+  footerCode: "",
+  registrationEnabled: false,
+  timezone: "Asia/Shanghai",
+  storefrontLayout: "classic",
+  storefrontSkin: "default",
+};
+
+const { handleSubmit, resetForm, setFieldValue, values } = useForm<FormValues>({ validationSchema: formSchema, initialValues });
+const loading = ref(false);
+const error = ref<string | null>(null);
+const mediaPickerTarget = ref<"logo" | "logoIcon" | "supportWechatQr" | null>(null);
+const supportSummaryPreview = computed(() => buildSupportContactSummary({
+  supportQq: values.supportQq,
+  supportTelegram: values.supportTelegram,
+  supportWechat: values.supportWechat,
+  supportWechatQr: values.supportWechatQr,
+  supportEmail: values.supportEmail,
+  supportCustomLinks: values.supportCustomLinks,
+}) || values.supportContact || "（未配置，保持为空）");
+const previewHref = computed(() => {
+  const url = values.siteUrl?.trim();
+  if (!url) return "/";
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "/";
+  }
+});
+
+function timezoneDisplayValue(value: unknown) {
+  const timezone = String(value ?? "");
+  return timezones.find((item) => item.value === timezone)?.label ?? timezone;
+}
+
+
+function setSelectedImage(url: string) {
+  if (mediaPickerTarget.value === "logo") setFieldValue("logo", url);
+  if (mediaPickerTarget.value === "logoIcon") setFieldValue("logoIcon", url);
+  if (mediaPickerTarget.value === "supportWechatQr") setFieldValue("supportWechatQr", url);
+  mediaPickerTarget.value = null;
+}
+
+function toFormValues(settings: Awaited<ReturnType<typeof onGetSiteSettings>>): FormValues {
+  const timezone = SITE_TIMEZONES.includes(settings.timezone as typeof SITE_TIMEZONES[number]) ? settings.timezone : initialValues.timezone;
+
+  return {
+    siteName: settings.siteName,
+    siteUrl: settings.siteUrl ?? "",
+    siteSubtitle: settings.siteSubtitle ?? "",
+    logo: settings.logo ?? "",
+    logoIcon: settings.logoIcon ?? "",
+    notice: settings.notice ?? "",
+    supportQq: settings.supportQq ?? "",
+    supportTelegram: settings.supportTelegram ?? "",
+    supportWechat: settings.supportWechat ?? "",
+    supportWechatQr: settings.supportWechatQr ?? "",
+    supportEmail: settings.supportEmail ?? "",
+    supportCustomLinks: settings.supportCustomLinks ?? "",
+    supportContact: settings.supportContact ?? "",
+    footerText: settings.footerText ?? "",
+    orderNotice: settings.orderNotice ?? "",
+    headCode: settings.headCode ?? "",
+    footerCode: settings.footerCode ?? "",
+    registrationEnabled: settings.registrationEnabled === true,
+    timezone,
+    storefrontLayout: (STOREFRONT_LAYOUT_IDS as readonly string[]).includes(settings.storefrontLayout) ? settings.storefrontLayout as FormValues["storefrontLayout"] : "classic",
+    storefrontSkin: (STOREFRONT_SKIN_IDS as readonly string[]).includes(settings.storefrontSkin) ? settings.storefrontSkin as FormValues["storefrontSkin"] : "default",
+  };
+}
+
+function syncTranslations(settings: Awaited<ReturnType<typeof onGetSiteSettings>>) {
+  for (const locale of ["zh-TW", "en-US"] as const) {
+    const content = settings.translations?.[locale];
+    translations[locale] = {
+      subtitle: content?.subtitle ?? "",
+      notice: content?.notice ?? "",
+      footerText: content?.footerText ?? "",
+      orderNotice: content?.orderNotice ?? "",
+      supportContact: content?.supportContact ?? "",
+    };
+  }
+  editorLocale.value = "zh-CN";
+}
+
+const currency = ref<CurrencyCode>("CNY");
+const exchangeRate = ref(1);
+const currencyRates = ref<Record<CurrencyCode, number>>(parseCurrencyRatesJson(null));
+const currencyOptions = SUPPORTED_CURRENCIES.map((item) => ({ code: item.code, label: currencyLabel(item.code) }));
+const rateEditOptions = SUPPORTED_CURRENCIES.map((item) => ({ code: item.code, name: item.name }));
+const currencyDialogOpen = ref(false);
+const currencyConfirmOpen = ref(false);
+const ratesDialogOpen = ref(false);
+const currencyPreviewLoading = ref(false);
+const currencySwitching = ref(false);
+const ratesSaving = ref(false);
+const currencyForm = reactive<{ currency: CurrencyCode; rate: string }>({ currency: "CNY", rate: "1" });
+const ratesForm = reactive<Record<string, string>>({});
+const currencyPreview = ref<Array<{ name: string; cnyAmount: string; convertedAmount: string }>>([]);
+const currencyPreviewHasProducts = ref(false);
+
+const currentRateText = computed(() => currency.value === "CNY" ? "1CNY = 1CNY" : formatRate(currency.value, exchangeRate.value));
+const previewRateText = computed(() => {
+  if (currencyForm.currency === "CNY") return "1人民币 = 1人民币";
+  const rate = parseExchangeRate(currencyForm.rate);
+  return rate === null ? "请输入大于 0 的汇率。" : formatRate(currencyForm.currency, rate);
+});
+
+function syncCurrency(settings: Awaited<ReturnType<typeof onGetSiteSettings>>) {
+  currency.value = isCurrencyCode(settings.currency) ? settings.currency : "CNY";
+  exchangeRate.value = settings.exchangeRate;
+  currencyRates.value = parseCurrencyRatesJson(settings.currencyRatesJson, currency.value, settings.exchangeRate);
+}
+
+function openRatesDialog() {
+  for (const item of SUPPORTED_CURRENCIES) {
+    ratesForm[item.code] = item.code === "CNY" ? "1" : String(currencyRates.value[item.code] ?? "");
+  }
+  ratesDialogOpen.value = true;
+}
+
+async function saveRates() {
+  ratesSaving.value = true;
+  error.value = null;
+  try {
+    const payload: Record<string, string> = {};
+    for (const item of SUPPORTED_CURRENCIES) payload[item.code] = ratesForm[item.code] ?? "";
+    const result = await runTelefunc(() => onSaveCurrencyRates({ rates: payload }), { successMessage: "汇率已保存。" });
+    currencyRates.value = result.currencyRates;
+    exchangeRate.value = result.exchangeRate;
+    ratesDialogOpen.value = false;
+  } catch (cause) {
+    error.value = userErrorMessage(cause);
+  } finally {
+    ratesSaving.value = false;
+  }
+}
+
+function openCurrencyDialog() {
+  currencyForm.currency = currency.value;
+  currencyForm.rate = currency.value === "CNY" ? "1" : String(exchangeRate.value);
+  currencyDialogOpen.value = true;
+}
+
+function onCurrencyChange(value: unknown) {
+  if (typeof value !== "string") return;
+  const next = SUPPORTED_CURRENCIES.find((item) => item.code === value);
+  if (!next) return;
+  currencyForm.currency = next.code;
+  if (next.code === "CNY") currencyForm.rate = "1";
+  else if (!currencyForm.rate || currencyForm.rate === "1") currencyForm.rate = "";
+}
+
+async function openCurrencyConfirm() {
+  const rate = currencyForm.currency === "CNY" ? 1 : parseExchangeRate(currencyForm.rate);
+  if (rate === null) {
+    error.value = "请输入大于 0 的汇率。";
+    return;
+  }
+  currencyPreviewLoading.value = true;
+  error.value = null;
+  try {
+    const preview = await runTelefunc(() => onGetCurrencySwitchPreview({ currency: currencyForm.currency, exchangeRate: rate }), { notifyError: false });
+    currencyPreview.value = preview.items;
+    currencyPreviewHasProducts.value = preview.hasProducts;
+    currencyConfirmOpen.value = true;
+  } catch (cause) {
+    error.value = userErrorMessage(cause);
+  } finally {
+    currencyPreviewLoading.value = false;
+  }
+}
+
+async function confirmCurrencySwitch() {
+  const rate = currencyForm.currency === "CNY" ? 1 : parseExchangeRate(currencyForm.rate);
+  if (rate === null) return;
+  currencySwitching.value = true;
+  error.value = null;
+  try {
+    const settings = await runTelefunc(() => onSwitchCurrency({ currency: currencyForm.currency, exchangeRate: rate }), { successMessage: `已切换到${currencyLabel(currencyForm.currency)}。` });
+    currency.value = isCurrencyCode(settings.currency) ? settings.currency : "CNY";
+    exchangeRate.value = settings.exchangeRate;
+    currencyConfirmOpen.value = false;
+    currencyDialogOpen.value = false;
+  } catch (cause) {
+    error.value = userErrorMessage(cause);
+  } finally {
+    currencySwitching.value = false;
+  }
+}
+
+async function loadSettings() {
+  loading.value = true;
+  error.value = null;
+  try {
+    const settings = await runTelefunc(() => onGetSiteSettings(), { notifyError: false });
+    resetForm({ values: toFormValues(settings) });
+    syncTranslations(settings);
+    syncCurrency(settings);
+  } catch (cause) {
+    error.value = userErrorMessage(cause);
+  } finally {
+    loading.value = false;
+  }
+}
+
+const saveSettings = handleSubmit(async (values) => {
+  loading.value = true;
+  error.value = null;
+  try {
+    const settings = await runTelefunc(() => onSaveSiteSettings({ ...values, translations: { ...translations } }), { successMessage: "站点设置已保存。", notifyError: false });
+    resetForm({ values: toFormValues(settings) });
+    syncTranslations(settings);
+    syncCurrency(settings);
+  } catch (cause) {
+    error.value = userErrorMessage(cause);
+  } finally {
+    loading.value = false;
+  }
+});
+
+onMounted(loadSettings);
+</script>
